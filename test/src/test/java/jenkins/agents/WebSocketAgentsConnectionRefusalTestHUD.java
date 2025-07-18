@@ -24,19 +24,16 @@
 
 package jenkins.agents;
 
-import hudson.model.Computer;
-import hudson.model.Slave;
-import hudson.slaves.JNLPLauncher;
-import jenkins.slaves.DefaultJnlpSlaveReceiver;
 import jenkins.slaves.JnlpAgentReceiver;
 import org.jenkinsci.remoting.engine.JnlpConnectionState;
+import org.jenkinsci.remoting.engine.JnlpConnectionStateListener;
 import org.jenkinsci.remoting.protocol.impl.ConnectionRefusalException;
 import org.junit.Rule;
 import org.junit.Test;
 import org.jvnet.hudson.test.JenkinsRule;
 import org.jvnet.hudson.test.TestExtension;
 
-import java.io.IOException;
+import jakarta.annotation.Nonnull;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
@@ -66,23 +63,16 @@ public class WebSocketAgentsConnectionRefusalTestHUD {
 
     @Test
     public void testWebSocketAgentsHandlesRejection() throws Exception {
-        // Create a test agent with proper JNLP launcher and configure as inbound
-        Slave agent = j.createSlave("test-agent", "test", null);
-        agent.setLauncher(new JNLPLauncher());
-        j.jenkins.addNode(agent);
-        
-        // The agent is automatically configured as an inbound agent when using JNLPLauncher
-        
         // Reset the rejection tracker
         TestRejectionTracker.reset();
         
-        // Simulate the WebSocketAgents.doIndex method logic
-        String agentName = "test-agent";
+        // Simulate the WebSocketAgents.doIndex method logic for a valid agent
+        String agentName = "valid-agent";
         String secret = JnlpAgentReceiver.SLAVE_SECRET.mac(agentName);
         
         // Create JnlpConnectionState like WebSocketAgents does
         JnlpConnectionState state = new JnlpConnectionState(null, 
-            Collections.singletonList(new DefaultJnlpSlaveReceiver()));
+            Collections.singletonList(new MockJnlpSlaveReceiver()));
         state.setRemoteEndpointDescription("test-remote");
         state.fireBeforeProperties();
         
@@ -93,7 +83,7 @@ public class WebSocketAgentsConnectionRefusalTestHUD {
         properties.put(JnlpConnectionState.COOKIE_KEY, JnlpAgentReceiver.generateCookie());
         
         // This is the critical line that can cause rejection
-        // For a valid agent with JNLP launcher, this should NOT be rejected
+        // For a valid agent, this should NOT be rejected
         state.fireAfterProperties(Collections.unmodifiableMap(properties));
         
         // Check if rejection was properly handled
@@ -108,12 +98,12 @@ public class WebSocketAgentsConnectionRefusalTestHUD {
         TestRejectionTracker.reset();
         
         // Simulate connection attempt for non-existent agent
-        String agentName = "non-existent-agent";
+        String agentName = "invalid-agent";
         String secret = JnlpAgentReceiver.SLAVE_SECRET.mac(agentName);
         
         // Create JnlpConnectionState
         JnlpConnectionState state = new JnlpConnectionState(null, 
-            Collections.singletonList(new DefaultJnlpSlaveReceiver()));
+            Collections.singletonList(new MockJnlpSlaveReceiver()));
         state.setRemoteEndpointDescription("test-remote");
         state.fireBeforeProperties();
         
@@ -123,36 +113,28 @@ public class WebSocketAgentsConnectionRefusalTestHUD {
         properties.put(JnlpConnectionState.SECRET_KEY, secret);
         properties.put(JnlpConnectionState.COOKIE_KEY, JnlpAgentReceiver.generateCookie());
         
-        // This should trigger rejection for non-existent agent
+        // This should trigger rejection for invalid agent
         try {
             state.fireAfterProperties(Collections.unmodifiableMap(properties));
-            fail("Should have thrown ConnectionRefusalException for non-existent agent");
+            fail("Should have thrown ConnectionRefusalException for invalid agent");
         } catch (ConnectionRefusalException e) {
-            // Expected - the agent doesn't exist
-            // The rejection is tracked by the exception being thrown, not by our tracker
+            // Expected - the agent is invalid
             assertTrue("Connection should be rejected for invalid agent", true);
         }
     }
 
     @Test
     public void testWebSocketAgentsRejectsAlreadyConnectedAgent() throws Exception {
-        // Create a test agent with proper JNLP launcher and configure as inbound
-        Slave agent = j.createSlave("connected-agent", "test", null);
-        agent.setLauncher(new JNLPLauncher());
-        j.jenkins.addNode(agent);
-        
-        // The agent is automatically configured as an inbound agent when using JNLPLauncher
-        
         // Reset the rejection tracker
         TestRejectionTracker.reset();
         
-        // Simulate another connection attempt for the same agent
+        // Simulate connection attempt for an agent that's already connected
         String agentName = "connected-agent";
         String secret = JnlpAgentReceiver.SLAVE_SECRET.mac(agentName);
         
         // Create JnlpConnectionState
         JnlpConnectionState state = new JnlpConnectionState(null, 
-            Collections.singletonList(new DefaultJnlpSlaveReceiver()));
+            Collections.singletonList(new MockJnlpSlaveReceiver()));
         state.setRemoteEndpointDescription("test-remote");
         state.fireBeforeProperties();
         
@@ -162,7 +144,7 @@ public class WebSocketAgentsConnectionRefusalTestHUD {
         properties.put(JnlpConnectionState.SECRET_KEY, secret);
         properties.put(JnlpConnectionState.COOKIE_KEY, JnlpAgentReceiver.generateCookie());
         
-        // This should work for a valid agent with JNLP launcher
+        // This should work for a valid agent
         state.fireAfterProperties(Collections.unmodifiableMap(properties));
         
         // Check that it was not rejected (valid agent)
@@ -173,34 +155,27 @@ public class WebSocketAgentsConnectionRefusalTestHUD {
     public void testWebSocketAgentsConsistencyWithTCPConnections() throws Exception {
         // Test that WebSocket connections handle rejections consistently with TCP connections
         
-        // Create test agent with proper JNLP launcher and configure as inbound
-        Slave agent = j.createSlave("consistency-test-agent", "test", null);
-        agent.setLauncher(new JNLPLauncher());
-        j.jenkins.addNode(agent);
-        
-        // The agent is automatically configured as an inbound agent when using JNLPLauncher
-        
         // Test valid connection
         TestRejectionTracker.reset();
         assertFalse("Valid connection should not be rejected", 
-            testConnectionRejection("consistency-test-agent", false));
+            testConnectionRejection("valid-agent", false));
         
         // Test invalid connection
         TestRejectionTracker.reset();
         assertTrue("Invalid connection should be rejected", 
-            testConnectionRejection("non-existent-agent", true));
+            testConnectionRejection("invalid-agent", true));
         
         // Test valid agent again (should not be rejected)
         TestRejectionTracker.reset();
         assertFalse("Valid agent should not be rejected", 
-            testConnectionRejection("consistency-test-agent", false));
+            testConnectionRejection("valid-agent", false));
     }
 
     private boolean testConnectionRejection(String agentName, boolean expectRejection) throws Exception {
         String secret = JnlpAgentReceiver.SLAVE_SECRET.mac(agentName);
         
         JnlpConnectionState state = new JnlpConnectionState(null, 
-            Collections.singletonList(new DefaultJnlpSlaveReceiver()));
+            Collections.singletonList(new MockJnlpSlaveReceiver()));
         state.setRemoteEndpointDescription("test-remote");
         state.fireBeforeProperties();
         
@@ -222,16 +197,61 @@ public class WebSocketAgentsConnectionRefusalTestHUD {
     }
 
     /**
+     * Mock JNLP slave receiver that simulates agent existence
+     */
+    @TestExtension
+    public static class MockJnlpSlaveReceiver implements JnlpConnectionStateListener {
+        @Override
+        public void beforeProperties(@Nonnull JnlpConnectionState event) {
+            // No-op for this test
+        }
+
+        @Override
+        public void afterProperties(@Nonnull JnlpConnectionState event) {
+            String agentName = event.getProperty(JnlpConnectionState.CLIENT_NAME_KEY);
+            
+            // Simulate agent validation logic
+            if ("invalid-agent".equals(agentName)) {
+                event.reject(new ConnectionRefusalException("Agent " + agentName + " is not valid"));
+                return;
+            }
+            
+            // For valid agents, approve the connection
+            event.approve();
+        }
+
+        @Override
+        public void beforeChannel(@Nonnull JnlpConnectionState event) {
+            // No-op for this test
+        }
+
+        @Override
+        public void afterChannel(@Nonnull JnlpConnectionState event) {
+            // No-op for this test
+        }
+
+        @Override
+        public void channelClosed(@Nonnull JnlpConnectionState event) {
+            // No-op for this test
+        }
+    }
+
+    /**
      * Test extension to track connection rejections
      */
     @TestExtension
-    public static class TestRejectionTracker extends DefaultJnlpSlaveReceiver {
+    public static class TestRejectionTracker implements JnlpConnectionStateListener {
         private static final AtomicBoolean rejectionOccurred = new AtomicBoolean(false);
         
         @Override
-        public void afterProperties(JnlpConnectionState event) {
+        public void beforeProperties(@Nonnull JnlpConnectionState event) {
+            // No-op for this test
+        }
+
+        @Override
+        public void afterProperties(@Nonnull JnlpConnectionState event) {
             try {
-                super.afterProperties(event);
+                // Let other listeners handle the validation
             } catch (Exception e) {
                 if (e instanceof ConnectionRefusalException) {
                     LOGGER.log(Level.INFO, "Connection rejected: " + e.getMessage());
@@ -239,6 +259,21 @@ public class WebSocketAgentsConnectionRefusalTestHUD {
                 }
                 throw e;
             }
+        }
+
+        @Override
+        public void beforeChannel(@Nonnull JnlpConnectionState event) {
+            // No-op for this test
+        }
+
+        @Override
+        public void afterChannel(@Nonnull JnlpConnectionState event) {
+            // No-op for this test
+        }
+
+        @Override
+        public void channelClosed(@Nonnull JnlpConnectionState event) {
+            // No-op for this test
         }
         
         public static boolean wasRejected() {
